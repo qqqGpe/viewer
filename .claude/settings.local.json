@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(qmake:*)",
+      "Bash(pkg-config:*)",
+      "Bash(apt-cache search:*)",
+      "Bash(sudo:*)",
+      "Bash(sudo apt-get install:*)",
+      "Bash(cmake:*)",
+      "Bash(pkill:*)",
+      "Bash(test_data.csv:*)",
+      "Bash(timeout:*)",
+      "Bash(echo:*)"
+    ]
+  }
+}
