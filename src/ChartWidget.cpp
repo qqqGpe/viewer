@@ -205,11 +205,18 @@ void CustomChartView::mousePressEvent(QMouseEvent* event) {
         setCursor(Qt::ClosedHandCursor);
         event->accept();
     } else if (event->button() == Qt::LeftButton) {
+        m_leftButtonPressed = true;
+        m_leftButtonStartPos = event->pos();
+        m_isRubberBandActive = false;
         QPointF scenePos = mapToScene(event->pos());
         QPointF chartPos = chart()->mapToValue(chart()->mapFromScene(scenePos));
         emit pointClicked(chartPos);
+        event->accept();
+    } else if (event->button() == Qt::RightButton) {
+        event->accept();
+    } else {
+        QChartView::mousePressEvent(event);
     }
-    QChartView::mousePressEvent(event);
 }
 
 void CustomChartView::mouseMoveEvent(QMouseEvent* event) {
@@ -219,6 +226,23 @@ void CustomChartView::mouseMoveEvent(QMouseEvent* event) {
         
         chart()->scroll(-delta.x(), delta.y());
         event->accept();
+    } else if (m_leftButtonPressed) {
+        QPoint delta = event->pos() - m_leftButtonStartPos;
+        int distance = qSqrt(delta.x() * delta.x() + delta.y() * delta.y());
+        
+        if (distance >= m_rubberBandThreshold) {
+            if (!m_isRubberBandActive) {
+                m_isRubberBandActive = true;
+                setRubberBand(QChartView::RectangleRubberBand);
+                // 发送模拟的 press 事件，让 QChartView 知道起始点
+                QMouseEvent pressEvent(QEvent::MouseButtonPress, m_leftButtonStartPos,
+                                       Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QChartView::mousePressEvent(&pressEvent);
+            }
+            QChartView::mouseMoveEvent(event);
+        } else {
+            event->accept();
+        }
     } else {
         QChartView::mouseMoveEvent(event);
     }
@@ -228,6 +252,16 @@ void CustomChartView::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::MiddleButton) {
         m_midButtonPressed = false;
         setCursor(Qt::ArrowCursor);
+        event->accept();
+    } else if (event->button() == Qt::LeftButton) {
+        if (m_isRubberBandActive) {
+            QChartView::mouseReleaseEvent(event);
+            setRubberBand(QChartView::NoRubberBand);
+        }
+        m_leftButtonPressed = false;
+        m_isRubberBandActive = false;
+        event->accept();
+    } else if (event->button() == Qt::RightButton) {
         event->accept();
     } else {
         QChartView::mouseReleaseEvent(event);
@@ -272,8 +306,8 @@ ChartWidget::ChartWidget(QWidget* parent)
 
     m_chartView = new CustomChartView(m_chart);
     m_chartView->setRenderHint(QPainter::Antialiasing);
-    m_chartView->setRubberBand(QChartView::RectangleRubberBand);
-    m_chartView->setDragMode(QGraphicsView::ScrollHandDrag);
+    m_chartView->setRubberBand(QChartView::NoRubberBand);
+    m_chartView->setDragMode(QGraphicsView::NoDrag);
     m_chartView->setWheelZoomEnabled(true);
     m_chartView->setFocusPolicy(Qt::StrongFocus);
     connect(m_chartView, &CustomChartView::seriesDropped, this, &ChartWidget::seriesDropped);
@@ -319,6 +353,11 @@ void ChartWidget::addSeries(const SeriesData& data, const QColor& color) {
     series->setName(data.name);
 
     SeriesStyle style;
+    style.pointShape = PointShape::None;
+    style.pointSize = 8;
+    style.lineStyle = LineStyle::Solid;
+    style.lineWidth = 3;
+
     QPen pen(color);
     pen.setWidth(style.lineWidth);
     pen.setStyle(Qt::SolidLine);
@@ -419,11 +458,6 @@ void ChartWidget::setTitle(const QString& title) {
 void ChartWidget::setZoomEnabled(bool enabled) {
     m_zoomEnabled = enabled;
     m_chartView->setWheelZoomEnabled(enabled);
-    if (enabled) {
-        m_chartView->setRubberBand(QChartView::RectangleRubberBand);
-    } else {
-        m_chartView->setRubberBand(QChartView::NoRubberBand);
-    }
 }
 
 void ChartWidget::setPanEnabled(bool enabled) {
@@ -509,6 +543,19 @@ void ChartWidget::onChartClicked(const QPointF& point) {
         m_coordinateOverlay->setText(QString("X: %1, Y: %2").arg(nearestPoint.x(), 0, 'f', 4).arg(nearestPoint.y(), 0, 'f', 4));
         m_coordinateOverlay->setVisible(true);
         emit coordinateSelected(nearestSeries, nearestPoint.x(), nearestPoint.y());
+
+        setSelectedSeries(nearestSeries);
+        QList<QLegendMarker*> markers = m_chart->legend()->markers();
+        for (QLegendMarker* marker : markers) {
+            QString markerName = marker->series()->name();
+            if (markerName == nearestSeries || markerName == nearestSeries + "_points") {
+                m_selectedMarker = marker;
+                break;
+            }
+        }
+        updateLegendMarkerHighlight();
+
+        updateHighlightPoint(nearestPoint, m_colorMap.value(nearestSeries, QColor(255, 140, 0)));
     }
 }
 
@@ -516,9 +563,25 @@ void ChartWidget::onSeriesClicked(const QPointF& point) {
     m_coordinateOverlay->setText(QString("X: %1, Y: %2").arg(point.x()).arg(point.y()));
     m_coordinateOverlay->setVisible(true);
 
-    QLineSeries* series = qobject_cast<QLineSeries*>(sender());
+    QAbstractSeries* series = qobject_cast<QAbstractSeries*>(sender());
     if (series) {
-        emit coordinateSelected(series->name(), point.x(), point.y());
+        QString seriesName = series->name();
+        if (seriesName.endsWith("_points")) {
+            seriesName = seriesName.left(seriesName.length() - 7);
+        }
+
+        emit coordinateSelected(seriesName, point.x(), point.y());
+
+        setSelectedSeries(seriesName);
+        QList<QLegendMarker*> markers = m_chart->legend()->markers();
+        for (QLegendMarker* marker : markers) {
+            QString markerName = marker->series()->name();
+            if (markerName == seriesName || markerName == seriesName + "_points") {
+                m_selectedMarker = marker;
+                break;
+            }
+        }
+        updateLegendMarkerHighlight();
     }
 }
 
@@ -559,7 +622,7 @@ void ChartWidget::updateLegendMarkerHighlight() {
         if (name == m_selectedSeries) {
             font.setBold(true);
             marker->setFont(font);
-            marker->setLabelBrush(QBrush(Qt::red));
+            marker->setLabelBrush(QBrush(Qt::blue));
         } else {
             font.setBold(false);
             marker->setFont(font);
@@ -634,6 +697,7 @@ void ChartWidget::updateAxesRange() {
 
     m_axisX->setRange(minX - paddingX, maxX + paddingX);
     m_axisY->setRange(minY - paddingY, maxY + paddingY);
+    m_axisY->setLabelFormat("%.3g");
 }
 
 void ChartWidget::updateScatterSeries(const QString& name) {
@@ -771,6 +835,32 @@ QColor ChartWidget::getSeriesColor(const QString& seriesName) const {
     int index = qHash(seriesName) % colorPalette.size();
     if (index < 0) index = -index;
     return colorPalette[index];
+}
+
+void ChartWidget::updateHighlightPoint(const QPointF& point, const QColor& color) {
+    if (m_highlightPoint) {
+        m_chart->removeSeries(m_highlightPoint);
+        delete m_highlightPoint;
+    }
+
+    m_highlightPoint = new QScatterSeries();
+    m_highlightPoint->setName("_highlight");
+    m_highlightPoint->setMarkerSize(14);
+    m_highlightPoint->setMarkerShape(QScatterSeries::MarkerShapeCircle);
+    m_highlightPoint->setColor(Qt::transparent);
+    m_highlightPoint->setBorderColor(color);
+    m_highlightPoint->append(point);
+
+    m_chart->addSeries(m_highlightPoint);
+    m_highlightPoint->attachAxis(m_axisX);
+    m_highlightPoint->attachAxis(m_axisY);
+
+    QList<QLegendMarker*> markers = m_chart->legend()->markers(m_highlightPoint);
+    for (QLegendMarker* marker : markers) {
+        marker->setVisible(false);
+    }
+
+    m_highlightColor = color;
 }
 
 } // namespace Viewer

@@ -5,6 +5,7 @@
 #include <QDataStream>
 #include <QDebug>
 #include <QFileInfo>
+#include <limits>
 
 namespace Viewer {
 
@@ -21,58 +22,127 @@ QList<SeriesData> DataParser::parseCSV(const QString& filePath, QString& error) 
     QTextStream in(&file);
     in.setCodec("UTF-8");
 
-    // Read first line to check for header
-    QString firstLine = in.readLine();
+    QString firstLine = in.readLine().trimmed();
 
-    bool hasHeader = isHeaderLine(firstLine);
-    int lineNum = hasHeader ? 2 : 1;
+    bool isTUMFormat = firstLine.startsWith('#');
+    QStringList columnNames;
 
-    // If header was present, firstLine contains the header, otherwise firstLine is data
-    QString currentLine = firstLine;
-    if (!hasHeader && !currentLine.isEmpty()) {
-        // Process first data line
-    } else if (hasHeader) {
-        currentLine = in.readLine();
-        lineNum++;
+    if (isTUMFormat) {
+        firstLine.remove(0, 1);
+        firstLine = firstLine.trimmed();
+        columnNames = firstLine.split(QRegExp("\\s+"), QString::SkipEmptyParts);
+        qDebug() << "  TUM format detected, columns:" << columnNames;
     }
 
-    QHash<QString, SeriesData*> seriesMap;
+    QList<QStringList> allDataLines;
+    double minTimestamp = std::numeric_limits<double>::max();
 
-    while (!currentLine.isEmpty()) {
-        QStringList parts = currentLine.split(',', QString::SkipEmptyParts);
-        if (parts.size() >= 3) {
-            bool timestampOk = false, valueOk = false;
-            double timestamp = parts[0].trimmed().toDouble(&timestampOk);
-            QString category = parts[1].trimmed();
-            double value = parts[2].trimmed().toDouble(&valueOk);
+    QString currentLine = isTUMFormat ? in.readLine() : firstLine;
+    while (!currentLine.isNull()) {
+        currentLine = currentLine.trimmed();
+        if (currentLine.isEmpty() || currentLine.startsWith('#')) {
+            currentLine = in.readLine();
+            continue;
+        }
 
-            QString seriesName = QString("%1_%2").arg(category, parts.size() > 3 ? parts[3].trimmed() : "data");
+        QStringList parts;
+        if (isTUMFormat) {
+            parts = currentLine.split(QRegExp("\\s+"), QString::SkipEmptyParts);
+        } else {
+            parts = currentLine.split(',', QString::SkipEmptyParts);
+        }
 
-            qDebug() << "    Parsing line:" << currentLine << "->" << seriesName << "timestamp:" << timestamp << "value:" << value;
-
-            if (timestampOk && valueOk && !category.isEmpty()) {
-                if (!seriesMap.contains(seriesName)) {
-                    SeriesData* series = new SeriesData(seriesName, category);
-                    seriesMap[seriesName] = series;
-                }
-                seriesMap[seriesName]->timestamps.append(timestamp);
-                seriesMap[seriesName]->values.append(value);
+        if (parts.size() >= 2) {
+            bool ok = false;
+            double ts = parts[0].trimmed().toDouble(&ok);
+            if (ok && ts < minTimestamp) {
+                minTimestamp = ts;
             }
+            allDataLines.append(parts);
         }
 
         currentLine = in.readLine();
-        lineNum++;
     }
-
-    // Now copy data from map to list
-    for (auto it = seriesMap.begin(); it != seriesMap.end(); ++it) {
-        seriesList.append(*it.value());
-    }
-
-    // Clean up pointers
-    qDeleteAll(seriesMap);
 
     file.close();
+
+    if (allDataLines.isEmpty()) {
+        error = QString("No valid data found in file");
+        return seriesList;
+    }
+
+    if (minTimestamp == std::numeric_limits<double>::max()) {
+        minTimestamp = 0;
+    }
+
+    qDebug() << "  Min timestamp:" << minTimestamp << ", aligning to 0";
+
+    if (isTUMFormat) {
+        int numColumns = allDataLines.first().size();
+
+        QVector<SeriesData*> seriesOrder;
+        seriesOrder.resize(numColumns - 1);
+
+        for (int col = 1; col < numColumns; ++col) {
+            QString seriesName;
+            if (col - 1 < columnNames.size()) {
+                seriesName = columnNames[col];
+            } else {
+                seriesName = QString("col_%1").arg(col);
+            }
+
+            seriesOrder[col - 1] = new SeriesData(seriesName, "data");
+        }
+
+        for (const auto& parts : allDataLines) {
+            bool tsOk = false;
+            double timestamp = parts[0].trimmed().toDouble(&tsOk) - minTimestamp;
+
+            for (int col = 1; col < parts.size() && col < numColumns; ++col) {
+                bool valOk = false;
+                double value = parts[col].trimmed().toDouble(&valOk);
+
+                if (tsOk && valOk && seriesOrder[col - 1]) {
+                    seriesOrder[col - 1]->timestamps.append(timestamp);
+                    seriesOrder[col - 1]->values.append(value);
+                }
+            }
+        }
+
+        for (auto* series : seriesOrder) {
+            if (series) {
+                seriesList.append(*series);
+                delete series;
+            }
+        }
+    } else {
+        QHash<QString, SeriesData*> seriesMap;
+
+        for (const auto& parts : allDataLines) {
+            if (parts.size() >= 3) {
+                bool timestampOk = false, valueOk = false;
+                double timestamp = parts[0].trimmed().toDouble(&timestampOk) - minTimestamp;
+                QString category = parts[1].trimmed();
+                double value = parts[2].trimmed().toDouble(&valueOk);
+
+                QString seriesName = QString("%1_%2").arg(category, parts.size() > 3 ? parts[3].trimmed() : "data");
+
+                if (timestampOk && valueOk && !category.isEmpty()) {
+                    if (!seriesMap.contains(seriesName)) {
+                        SeriesData* series = new SeriesData(seriesName, category);
+                        seriesMap[seriesName] = series;
+                    }
+                    seriesMap[seriesName]->timestamps.append(timestamp);
+                    seriesMap[seriesName]->values.append(value);
+                }
+            }
+        }
+
+        for (auto it = seriesMap.begin(); it != seriesMap.end(); ++it) {
+            seriesList.append(*it.value());
+        }
+        qDeleteAll(seriesMap);
+    }
 
     if (seriesList.isEmpty()) {
         error = QString("No valid data found in file");

@@ -112,7 +112,11 @@ private:
     bool m_xKeyPressed = false;
     bool m_vKeyPressed = false;
     bool m_midButtonPressed = false;
+    bool m_leftButtonPressed = false;
+    bool m_isRubberBandActive = false;
     QPoint m_lastMousePos;
+    QPoint m_leftButtonStartPos;
+    static const int m_rubberBandThreshold = 10;
 };
 
 class ChartWidget : public QWidget {
@@ -169,6 +173,7 @@ private:
     void updateScatterSeries(const QString& name);
     void updateLineStyle(const QString& name);
     void updateLegendMarkerHighlight();
+    void updateHighlightPoint(const QPointF& point, const QColor& color);
     QColor getSeriesColor(const QString& seriesName) const;
 
     QChart* m_chart;
@@ -190,6 +195,8 @@ private:
     bool m_panEnabled = true;
     QString m_selectedSeries;
     QLegendMarker* m_selectedMarker = nullptr;
+    QScatterSeries* m_highlightPoint = nullptr;
+    QColor m_highlightColor;
 };
 
 } // namespace Viewer
