@@ -2,6 +2,7 @@
 #include "models/SeriesData.h"
 #include <QVBoxLayout>
 #include <QHeaderView>
+#include <QLabel>
 #include <QDebug>
 #include <QMouseEvent>
 #include <QDrag>
@@ -63,7 +64,7 @@ LeftPane::LeftPane(QWidget* parent)
     : QWidget(parent) {
 
     m_treeWidget = new DragTreeWidget(this);
-    m_treeWidget->setHeaderLabels(QStringList() << "Data Files");
+    m_treeWidget->setHeaderHidden(true);
     m_treeWidget->setAlternatingRowColors(true);
     m_treeWidget->setSelectionBehavior(QAbstractItemView::SelectItems);
     m_treeWidget->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -104,6 +105,13 @@ LeftPane::LeftPane(QWidget* parent)
 
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    QLabel* header = new QLabel("Data Files", this);
+    header->setStyleSheet(
+        "font-weight: bold; padding: 4px 6px;"
+        "background: #d0d8e8; border-top: 1px solid #b0b8c8;");
+    layout->addWidget(header);
     layout->addWidget(m_treeWidget);
 
     connect(m_treeWidget, &QTreeWidget::itemChanged, this, &LeftPane::onItemChanged);
@@ -167,19 +175,47 @@ void LeftPane::setSeriesSelected(const QString& seriesName, bool selected) {
 void LeftPane::syncSelectionWithSeries(const QStringList& seriesNames) {
     m_selectedSeries.clear();
     m_selectedSeries = QSet<QString>::fromList(seriesNames);
-    
+
     bool wasBlocked = m_treeWidget->blockSignals(true);
-    
+
+    // Pass 1: update leaf (series) items
     QTreeWidgetItemIterator it(m_treeWidget);
     while (*it) {
-        QString seriesName = (*it)->data(0, Qt::UserRole).toString();
-        if (!seriesName.isEmpty() && (*it)->parent() && (*it)->parent()->parent()) {
-            bool shouldSelect = seriesNames.contains(seriesName);
-            (*it)->setCheckState(0, shouldSelect ? Qt::Checked : Qt::Unchecked);
+        QTreeWidgetItem* item = *it;
+        if (item->parent() && item->parent()->parent()) {
+            QString name = item->data(0, Qt::UserRole).toString();
+            item->setCheckState(0, seriesNames.contains(name) ? Qt::Checked : Qt::Unchecked);
         }
         ++it;
     }
-    
+
+    // Pass 2: update category and file items to match their children
+    for (int fi = 0; fi < m_treeWidget->topLevelItemCount(); ++fi) {
+        QTreeWidgetItem* fileItem = m_treeWidget->topLevelItem(fi);
+        int fileChecked = 0, fileTotal = 0;
+
+        for (int ci = 0; ci < fileItem->childCount(); ++ci) {
+            QTreeWidgetItem* catItem = fileItem->child(ci);
+            int catChecked = 0, catTotal = catItem->childCount();
+            for (int si = 0; si < catTotal; ++si) {
+                if (catItem->child(si)->checkState(0) == Qt::Checked)
+                    ++catChecked;
+            }
+            fileChecked += catChecked;
+            fileTotal  += catTotal;
+
+            Qt::CheckState catState = (catChecked == 0)        ? Qt::Unchecked
+                                    : (catChecked == catTotal)  ? Qt::Checked
+                                                                : Qt::PartiallyChecked;
+            catItem->setCheckState(0, catState);
+        }
+
+        Qt::CheckState fileState = (fileChecked == 0)        ? Qt::Unchecked
+                                 : (fileChecked == fileTotal) ? Qt::Checked
+                                                              : Qt::PartiallyChecked;
+        fileItem->setCheckState(0, fileState);
+    }
+
     m_treeWidget->blockSignals(wasBlocked);
 }
 
@@ -189,7 +225,12 @@ void LeftPane::onItemChanged(QTreeWidgetItem* item, int column) {
     qDebug() << "LeftPane::onItemChanged";
 
     if (!item->parent()) {
+        // File item clicked: PartiallyChecked → treat as Checked (select all)
         Qt::CheckState state = item->checkState(0);
+        if (state == Qt::PartiallyChecked) {
+            state = Qt::Checked;
+            item->setCheckState(0, state);
+        }
         qDebug() << "  File item:" << item->text(0) << "state:" << state;
         for (int i = 0; i < item->childCount(); ++i) {
             QTreeWidgetItem* categoryItem = item->child(i);
@@ -199,7 +240,12 @@ void LeftPane::onItemChanged(QTreeWidgetItem* item, int column) {
     }
 
     if (!item->parent()->parent()) {
+        // Category item clicked: PartiallyChecked → treat as Checked (select all)
         Qt::CheckState state = item->checkState(0);
+        if (state == Qt::PartiallyChecked) {
+            state = Qt::Checked;
+            item->setCheckState(0, state);
+        }
         qDebug() << "  Category item:" << item->text(0) << "state:" << state;
         for (int i = 0; i < item->childCount(); ++i) {
             item->child(i)->setCheckState(0, state);
@@ -283,7 +329,8 @@ void LeftPane::populateTree() {
 
             for (const auto& series : seriesList) {
                 QTreeWidgetItem* seriesItem = new QTreeWidgetItem(categoryItem);
-                seriesItem->setData(0, Qt::UserRole, series.name);
+                QString compoundKey = filePath + QChar('\x1E') + series.name;
+                seriesItem->setData(0, Qt::UserRole, compoundKey);
                 seriesItem->setText(0, series.name);
                 seriesItem->setCheckState(0, Qt::Unchecked);
             }

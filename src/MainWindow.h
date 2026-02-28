@@ -10,6 +10,7 @@
 #include "LeftPane.h"
 #include "CanvasTabWidget.h"
 #include "DataModel.h"
+#include "FavorPanel.h"
 
 namespace Viewer {
 
@@ -50,9 +51,13 @@ private slots:
 
     void onCoordinateSelected(const QString& seriesName, double x, double y);
     void onSeriesRemoved(const QString& name);
+    void onSeriesDropped(const QString& seriesName);
     void onCurrentCanvasChanged(int index);
     void onCanvasCreated(const QString& name);
     void onCanvasDestroyed(int index);
+
+    void onSaveCurveConfig();
+    void onApplyConfig(const QString& configName);
 
 private:
     void createActions();
@@ -69,8 +74,10 @@ private:
 
     DataModel* m_dataModel;
     LeftPane* m_leftPane;
+    FavorPanel* m_favorPanel;
     CanvasTabWidget* m_canvasArea;
     QSplitter* m_splitter;
+    QSplitter* m_leftSplitter;
 
     QStatusBar* m_statusBar;
     QLabel* m_coordinateLabel;
@@ -86,6 +93,7 @@ private:
     QAction* m_newCanvasAction;
     QAction* m_destroyCanvasAction;
     QAction* m_renameCanvasAction;
+    QAction* m_saveCurveConfigAction;
 
     QAction* m_aboutAction;
 };

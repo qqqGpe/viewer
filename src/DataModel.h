@@ -32,6 +32,7 @@ public:
     int getSeriesCount() const;
     int getFileCount() const;
     SeriesData getSeriesByName(const QString& name) const;
+    SeriesData getSeriesByFileAndName(const QString& filePath, const QString& name) const;
 
 signals:
     void dataLoaded(const QString& filePath);

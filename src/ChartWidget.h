@@ -127,7 +127,7 @@ public:
     ~ChartWidget();
 
     void setDataModel(DataModel* model);
-    void addSeries(const SeriesData& data, const QColor& color = QColor());
+    void addSeries(const SeriesData& data, const QColor& color, const QString& compoundKey);
     void removeSeries(const QString& name);
     void clearAll();
 
@@ -189,6 +189,8 @@ private:
     QHash<QString, SeriesData> m_seriesDataMap;
     QHash<QString, QColor> m_colorMap;
     QHash<QString, SeriesStyle> m_styleMap;
+    QHash<QString, QString> m_displayNameMap;           // compoundKey -> displayName
+    QHash<QString, QString> m_compoundKeyByDisplayName; // displayName -> compoundKey
 
     QString m_title;
     bool m_zoomEnabled = true;

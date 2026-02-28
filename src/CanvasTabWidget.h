@@ -46,6 +46,7 @@ signals:
     void canvasDestroyed(int index);
     void canvasRenamed(int index, const QString& newName);
     void currentChanged(int index);
+    void saveConfigRequested();
 
 private slots:
     void onTabCloseRequested(int index);
@@ -58,6 +59,7 @@ private slots:
     void onSeriesSelected(const QString& name);
 
     void onDataLoaded(const QString& filePath);
+    void onTabBarContextMenu(const QPoint& pos);
 
 private:
     QString generateCanvasName() const;
@@ -67,16 +69,12 @@ private:
     void connectCanvasSignals(ChartWidget* canvas);
 
     QTabWidget* m_tabWidget;
-    QPushButton* m_newCanvasButton;
-    
+    QWidget*    m_plusTabWidget = nullptr;  // the "+" pseudo-tab, always kept last
+
     QLabel* m_selectedLabel;
-    QLabel* m_pointShapeLabel;
     QComboBox* m_pointShapeCombo;
-    QLabel* m_pointSizeLabel;
     QSpinBox* m_pointSizeSpin;
-    QLabel* m_lineStyleLabel;
     QComboBox* m_lineStyleCombo;
-    QLabel* m_lineWidthLabel;
     QSpinBox* m_lineWidthSpin;
     
     DataModel* m_dataModel = nullptr;

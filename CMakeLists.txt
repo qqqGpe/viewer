@@ -19,6 +19,8 @@ set(SOURCES
     src/ChartWidget.cpp
     src/DataParser.cpp
     src/DataModel.cpp
+    src/FavorPanel.cpp
+    src/models/ConfigManager.cpp
 )
 
 # Header files
@@ -29,8 +31,11 @@ set(HEADERS
     src/ChartWidget.h
     src/DataParser.h
     src/DataModel.h
+    src/FavorPanel.h
     src/models/CategoryItem.h
     src/models/SeriesData.h
+    src/models/CurveConfig.h
+    src/models/ConfigManager.h
 )
 
 # Create executable

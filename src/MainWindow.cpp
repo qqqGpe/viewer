@@ -1,10 +1,14 @@
 #include "MainWindow.h"
 #include "DataParser.h"
+#include "models/ConfigManager.h"
+#include "models/CurveConfig.h"
 #include <QApplication>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QMessageBox>
 #include <QHBoxLayout>
 #include <QSize>
+#include <QStyle>
 #include <QDebug>
 
 namespace Viewer {
@@ -17,8 +21,10 @@ MainWindow::MainWindow(QWidget* parent)
 
     m_dataModel = new DataModel(this);
     m_leftPane = new LeftPane(this);
+    m_favorPanel = new FavorPanel(this);
     m_canvasArea = new CanvasTabWidget(this);
     m_splitter = new QSplitter(Qt::Horizontal, this);
+    m_leftSplitter = new QSplitter(Qt::Vertical, this);
 
     m_leftPane->setDataModel(m_dataModel);
     m_canvasArea->setDataModel(m_dataModel);
@@ -44,13 +50,16 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_canvasArea, &CanvasTabWidget::canvasCreated, this, &MainWindow::onCanvasCreated);
     connect(m_canvasArea, &CanvasTabWidget::canvasDestroyed, this, &MainWindow::onCanvasDestroyed);
     connect(m_canvasArea, &CanvasTabWidget::currentChanged, this, &MainWindow::onCurrentCanvasChanged);
+    connect(m_canvasArea, &CanvasTabWidget::saveConfigRequested, this, &MainWindow::onSaveCurveConfig);
 
     auto connectChartSignals = [this](ChartWidget* chart) {
-        connect(chart, &ChartWidget::coordinateSelected, this, &MainWindow::onCoordinateSelected);
-        connect(chart, &ChartWidget::seriesRemoved, this, &MainWindow::onSeriesRemoved);
-        connect(chart, &ChartWidget::seriesDropped, this, [this](const QString& seriesName) {
-            m_leftPane->setSeriesSelected(seriesName, true);
-        });
+        // Use UniqueConnection to prevent duplicate connections when switching tabs
+        connect(chart, &ChartWidget::coordinateSelected, this, &MainWindow::onCoordinateSelected,
+                Qt::UniqueConnection);
+        connect(chart, &ChartWidget::seriesRemoved, this, &MainWindow::onSeriesRemoved,
+                Qt::UniqueConnection);
+        connect(chart, &ChartWidget::seriesDropped, this, &MainWindow::onSeriesDropped,
+                Qt::UniqueConnection);
     };
 
     connectChartSignals(m_canvasArea->currentCanvas());
@@ -60,6 +69,11 @@ MainWindow::MainWindow(QWidget* parent)
             connectChartSignals(chart);
         }
     });
+
+    connect(&ConfigManager::instance(), &ConfigManager::configsChanged,
+            m_favorPanel, &FavorPanel::refreshConfigs);
+    connect(m_favorPanel, &FavorPanel::applyConfigRequested,
+            this, &MainWindow::onApplyConfig);
 
     m_closeFileAction->setEnabled(false);
     m_closeAllAction->setEnabled(false);
@@ -131,6 +145,13 @@ void MainWindow::createActions() {
     m_renameCanvasAction->setStatusTip("Rename the current canvas");
     connect(m_renameCanvasAction, &QAction::triggered, this, &MainWindow::onRenameCanvas);
 
+    m_saveCurveConfigAction = new QAction(this);
+    m_saveCurveConfigAction->setIcon(style()->standardIcon(QStyle::SP_DialogSaveButton));
+    m_saveCurveConfigAction->setText("Save Config");
+    m_saveCurveConfigAction->setToolTip("Save current canvas curves as a named config");
+    m_saveCurveConfigAction->setStatusTip("Save current canvas curves as a named config");
+    connect(m_saveCurveConfigAction, &QAction::triggered, this, &MainWindow::onSaveCurveConfig);
+
     m_aboutAction = new QAction("About", this);
     m_aboutAction->setStatusTip("Show information about this application");
     connect(m_aboutAction, &QAction::triggered, this, &MainWindow::onAbout);
@@ -183,9 +204,15 @@ void MainWindow::createStatusBar() {
 }
 
 void MainWindow::setupLayout() {
-    m_splitter->addWidget(m_leftPane);
-    m_splitter->addWidget(m_canvasArea);
+    // Left side: series tree (top) + saved configs panel (bottom)
+    m_leftSplitter->addWidget(m_leftPane);
+    m_leftSplitter->addWidget(m_favorPanel);
+    m_leftSplitter->setSizes({550, 180});
+    m_leftSplitter->setStretchFactor(0, 1);
+    m_leftSplitter->setStretchFactor(1, 0);
 
+    m_splitter->addWidget(m_leftSplitter);
+    m_splitter->addWidget(m_canvasArea);
     m_splitter->setSizes({250, 950});
     m_splitter->setStretchFactor(0, 0);
     m_splitter->setStretchFactor(1, 1);
@@ -302,16 +329,40 @@ void MainWindow::onFileAdded(const QString& filePath) {
     m_closeFileAction->setEnabled(true);
     m_closeAllAction->setEnabled(true);
     m_exportBinaryAction->setEnabled(true);
+
+    // populateTree() was called by LeftPane (clears all checkboxes); re-sync with current canvas
+    ChartWidget* canvas = m_canvasArea->currentCanvas();
+    if (canvas) {
+        m_leftPane->syncSelectionWithSeries(canvas->getSeriesNames());
+    }
 }
 
 void MainWindow::onFileRemoved(const QString& filePath) {
-    Q_UNUSED(filePath);
     updateFileInfoLabel();
 
     bool hasFiles = m_dataModel->getFileCount() > 0;
     m_closeFileAction->setEnabled(hasFiles);
     m_closeAllAction->setEnabled(hasFiles);
     m_exportBinaryAction->setEnabled(hasFiles);
+
+    // Remove series from ALL canvases belonging to the removed file
+    const QString prefix = filePath + QChar('\x1E');
+    for (int i = 0; i < m_canvasArea->canvasCount(); ++i) {
+        ChartWidget* canvas = m_canvasArea->canvasAt(i);
+        if (!canvas) continue;
+        const QStringList compoundKeys = canvas->getSeriesNames();
+        for (const QString& key : compoundKeys) {
+            if (key.startsWith(prefix)) {
+                canvas->removeSeries(key);
+            }
+        }
+    }
+
+    // populateTree() was called by LeftPane (clears all checkboxes); re-sync with current canvas
+    ChartWidget* canvas = m_canvasArea->currentCanvas();
+    if (canvas) {
+        m_leftPane->syncSelectionWithSeries(canvas->getSeriesNames());
+    }
 }
 
 void MainWindow::onDataCleared() {
@@ -323,7 +374,14 @@ void MainWindow::onDataCleared() {
     m_exportBinaryAction->setEnabled(false);
 
     m_leftPane->clearSelection();
-    m_canvasArea->clearCurrentCanvas();
+
+    // Clear ALL canvases, not just the current one
+    for (int i = 0; i < m_canvasArea->canvasCount(); ++i) {
+        ChartWidget* canvas = m_canvasArea->canvasAt(i);
+        if (canvas) {
+            canvas->clearAll();
+        }
+    }
 }
 
 void MainWindow::onDataError(const QString& error) {
@@ -363,8 +421,17 @@ void MainWindow::onCoordinateSelected(const QString& seriesName, double x, doubl
         .arg(y, 0, 'f', 4));
 }
 
+void MainWindow::onSeriesDropped(const QString& seriesName) {
+    m_leftPane->setSeriesSelected(seriesName, true);
+}
+
 void MainWindow::onSeriesRemoved(const QString& name) {
-    m_leftPane->setSeriesSelected(name, false);
+    // Only uncheck if the current canvas no longer has this series.
+    // A non-current canvas may emit seriesRemoved while the current canvas still shows it.
+    ChartWidget* current = m_canvasArea->currentCanvas();
+    if (!current || !current->getSeriesNames().contains(name)) {
+        m_leftPane->setSeriesSelected(name, false);
+    }
 }
 
 void MainWindow::onCurrentCanvasChanged(int index) {
@@ -429,6 +496,79 @@ void MainWindow::updateFileInfoLabel() {
             .arg(fileCount)
             .arg(seriesCount)
             .arg(categoryCount));
+    }
+}
+
+void MainWindow::onSaveCurveConfig() {
+    ChartWidget* canvas = m_canvasArea->currentCanvas();
+    if (!canvas) return;
+
+    QStringList compoundKeys = canvas->getSeriesNames();
+    if (compoundKeys.isEmpty()) {
+        QMessageBox::information(this, "Empty Canvas",
+                                 "Current canvas has no curves to save.");
+        return;
+    }
+
+    // Extract display names from compound keys
+    QStringList displayNames;
+    for (const QString& key : compoundKeys) {
+        int sep = key.indexOf('\x1E');
+        displayNames.append(sep >= 0 ? key.mid(sep + 1) : key);
+    }
+
+    bool ok;
+    QString name = QInputDialog::getText(this, "Save Config",
+                                         "Config name:", QLineEdit::Normal,
+                                         QString(), &ok);
+    if (!ok || name.trimmed().isEmpty()) return;
+
+    CurveConfig cfg;
+    cfg.name = name.trimmed();
+    cfg.seriesNames = displayNames;
+    ConfigManager::instance().saveConfig(cfg);
+}
+
+void MainWindow::onApplyConfig(const QString& configName) {
+    CurveConfig cfg = ConfigManager::instance().getConfig(configName);
+    if (cfg.name.isEmpty() || cfg.seriesNames.isEmpty()) return;
+
+    if (m_dataModel->getFileCount() == 0) {
+        QMessageBox::warning(this, "No Data",
+                             "Please load a data file first.");
+        return;
+    }
+
+    // Build set of target display names for fast lookup
+    QSet<QString> targets = QSet<QString>::fromList(cfg.seriesNames);
+
+    // Collect matching compound keys across all loaded files
+    QStringList toAdd;
+    for (const QString& filePath : m_dataModel->getFileNames()) {
+        for (const SeriesData& series : m_dataModel->getSeriesForFile(filePath)) {
+            if (targets.contains(series.name)) {
+                toAdd.append(filePath + QChar('\x1E') + series.name);
+            }
+        }
+    }
+
+    if (toAdd.isEmpty()) {
+        QMessageBox::information(this, "No Match",
+            QString("None of the variables in config \"%1\" were found "
+                    "in the currently loaded data.").arg(configName));
+        return;
+    }
+
+    // Create a new canvas named after the config and populate it
+    m_canvasArea->createNewCanvas(cfg.name);
+    for (const QString& key : toAdd) {
+        m_canvasArea->addSeriesToCurrentCanvas(key);
+    }
+
+    // Sync left-pane checkboxes with the new canvas
+    ChartWidget* newCanvas = m_canvasArea->currentCanvas();
+    if (newCanvas) {
+        m_leftPane->syncSelectionWithSeries(newCanvas->getSeriesNames());
     }
 }
 

@@ -186,4 +186,16 @@ SeriesData DataModel::getSeriesByName(const QString& name) const {
     return SeriesData();
 }
 
+SeriesData DataModel::getSeriesByFileAndName(const QString& filePath, const QString& name) const {
+    auto it = m_fileSeries.find(filePath);
+    if (it != m_fileSeries.end()) {
+        for (const auto& series : it.value()) {
+            if (series.name == name) {
+                return series;
+            }
+        }
+    }
+    return SeriesData();
+}
+
 } // namespace Viewer

@@ -21,7 +21,7 @@ namespace Viewer {
 
 FitButton::FitButton(QWidget* parent)
     : QWidget(parent) {
-    setFixedSize(18, 18);
+    setFixedSize(28, 28);
     setCursor(Qt::PointingHandCursor);
     setToolTip("Fit curves to view");
 }
@@ -39,8 +39,8 @@ void FitButton::paintEvent(QPaintEvent* event) {
     QPen pen(QColor(80, 80, 80), 1.5);
     painter.setPen(pen);
 
-    int margin = 2;
-    int cornerLen = 4;
+    int margin = 4;
+    int cornerLen = 7;
     int w = width();
     int h = height();
 
@@ -338,19 +338,53 @@ void ChartWidget::setDataModel(DataModel* model) {
     m_dataModel = model;
 }
 
-void ChartWidget::addSeries(const SeriesData& data, const QColor& color) {
+void ChartWidget::addSeries(const SeriesData& data, const QColor& color, const QString& compoundKey) {
     m_chartView->setFocus();
+    if (data.isEmpty()) return;
 
-    if (data.isEmpty()) {
-        return;
+    const QString& displayName = data.name;
+
+    // Remove existing entry with same compound key
+    if (m_seriesMap.contains(compoundKey)) {
+        if (m_selectedSeries == m_displayNameMap.value(compoundKey)) {
+            m_selectedSeries.clear();
+            m_selectedMarker = nullptr;
+        }
+        QLineSeries* existing = m_seriesMap.take(compoundKey);
+        m_chart->removeSeries(existing); delete existing;
+        if (m_scatterMap.contains(compoundKey)) {
+            QScatterSeries* es = m_scatterMap.take(compoundKey);
+            m_chart->removeSeries(es); delete es;
+        }
+        m_compoundKeyByDisplayName.remove(m_displayNameMap.value(compoundKey));
+        m_displayNameMap.remove(compoundKey);
+        m_seriesDataMap.remove(compoundKey);
+        m_colorMap.remove(compoundKey);
+        m_styleMap.remove(compoundKey);
     }
 
-    if (m_seriesMap.contains(data.name)) {
-        removeSeries(data.name);
+    // Remove any existing entry with same display name (different file)
+    if (m_compoundKeyByDisplayName.contains(displayName)) {
+        QString oldKey = m_compoundKeyByDisplayName.value(displayName);
+        if (m_selectedSeries == displayName) {
+            m_selectedSeries.clear();
+            m_selectedMarker = nullptr;
+        }
+        QLineSeries* existing = m_seriesMap.take(oldKey);
+        m_chart->removeSeries(existing); delete existing;
+        if (m_scatterMap.contains(oldKey)) {
+            QScatterSeries* es = m_scatterMap.take(oldKey);
+            m_chart->removeSeries(es); delete es;
+        }
+        m_seriesDataMap.remove(oldKey);
+        m_colorMap.remove(oldKey);
+        m_styleMap.remove(oldKey);
+        m_displayNameMap.remove(oldKey);
+        m_compoundKeyByDisplayName.remove(displayName);
     }
 
     QLineSeries* series = new QLineSeries();
-    series->setName(data.name);
+    series->setName(displayName);
 
     SeriesStyle style;
     style.pointShape = PointShape::None;
@@ -364,18 +398,19 @@ void ChartWidget::addSeries(const SeriesData& data, const QColor& color) {
     series->setPen(pen);
     series->setPointsVisible(false);
 
-    for (int i = 0; i < data.pointCount(); ++i) {
+    for (int i = 0; i < data.pointCount(); ++i)
         series->append(data.timestamps[i], data.values[i]);
-    }
 
     m_chart->addSeries(series);
     series->attachAxis(m_axisX);
     series->attachAxis(m_axisY);
 
-    m_seriesMap[data.name] = series;
-    m_seriesDataMap[data.name] = data;
-    m_colorMap[data.name] = color;
-    m_styleMap[data.name] = style;
+    m_seriesMap[compoundKey] = series;
+    m_seriesDataMap[compoundKey] = data;
+    m_colorMap[compoundKey] = color;
+    m_styleMap[compoundKey] = style;
+    m_displayNameMap[compoundKey] = displayName;
+    m_compoundKeyByDisplayName[displayName] = compoundKey;
 
     QTimer::singleShot(0, this, [this]() {
         QList<QLegendMarker*> markers = m_chart->legend()->markers();
@@ -385,8 +420,7 @@ void ChartWidget::addSeries(const SeriesData& data, const QColor& color) {
         }
     });
 
-    updateScatterSeries(data.name);
-
+    updateScatterSeries(compoundKey);
     connect(series, &QLineSeries::clicked, this, &ChartWidget::onSeriesClicked);
     connect(series, &QLineSeries::hovered, this, &ChartWidget::onHovered);
 
@@ -394,50 +428,43 @@ void ChartWidget::addSeries(const SeriesData& data, const QColor& color) {
     m_chart->update();
 }
 
-void ChartWidget::removeSeries(const QString& name) {
-    if (!m_seriesMap.contains(name)) {
-        return;
-    }
+void ChartWidget::removeSeries(const QString& compoundKey) {
+    if (!m_seriesMap.contains(compoundKey)) return;
 
-    if (m_selectedSeries == name) {
+    QString displayName = m_displayNameMap.value(compoundKey);
+    if (m_selectedSeries == displayName) {
         m_selectedSeries.clear();
         m_selectedMarker = nullptr;
     }
 
-    QLineSeries* series = m_seriesMap[name];
-    m_chart->removeSeries(series);
-    delete series;
-    m_seriesMap.remove(name);
+    QLineSeries* series = m_seriesMap.take(compoundKey);
+    m_chart->removeSeries(series); delete series;
 
-    if (m_scatterMap.contains(name)) {
-        QScatterSeries* scatter = m_scatterMap[name];
-        m_chart->removeSeries(scatter);
-        delete scatter;
-        m_scatterMap.remove(name);
+    if (m_scatterMap.contains(compoundKey)) {
+        QScatterSeries* scatter = m_scatterMap.take(compoundKey);
+        m_chart->removeSeries(scatter); delete scatter;
     }
 
-    m_seriesDataMap.remove(name);
-    m_colorMap.remove(name);
-    m_styleMap.remove(name);
+    m_seriesDataMap.remove(compoundKey);
+    m_colorMap.remove(compoundKey);
+    m_styleMap.remove(compoundKey);
+    m_compoundKeyByDisplayName.remove(displayName);
+    m_displayNameMap.remove(compoundKey);
 
-    emit seriesRemoved(name);
+    updateAxesRange();
+    emit seriesRemoved(compoundKey);
 }
 
 void ChartWidget::clearAll() {
-    for (auto* series : m_seriesMap) {
-        m_chart->removeSeries(series);
-        delete series;
-    }
-    for (auto* scatter : m_scatterMap) {
-        m_chart->removeSeries(scatter);
-        delete scatter;
-    }
-
+    for (auto* series : m_seriesMap) { m_chart->removeSeries(series); delete series; }
+    for (auto* scatter : m_scatterMap) { m_chart->removeSeries(scatter); delete scatter; }
     m_seriesMap.clear();
     m_scatterMap.clear();
     m_seriesDataMap.clear();
     m_colorMap.clear();
     m_styleMap.clear();
+    m_displayNameMap.clear();
+    m_compoundKeyByDisplayName.clear();
     m_selectedSeries.clear();
     m_selectedMarker = nullptr;
 }
@@ -482,80 +509,82 @@ QString ChartWidget::selectedSeries() const {
 }
 
 void ChartWidget::setSelectedSeries(const QString& name) {
-    if (m_seriesMap.contains(name) || name.isEmpty()) {
+    if (m_compoundKeyByDisplayName.contains(name) || name.isEmpty()) {
         m_selectedSeries = name;
         emit seriesSelected(name);
     }
 }
 
-void ChartWidget::setSeriesPointShape(const QString& name, PointShape shape) {
-    if (!m_styleMap.contains(name)) return;
-    m_styleMap[name].pointShape = shape;
-    updateScatterSeries(name);
+void ChartWidget::setSeriesPointShape(const QString& displayName, PointShape shape) {
+    QString compoundKey = m_compoundKeyByDisplayName.value(displayName);
+    if (!m_styleMap.contains(compoundKey)) return;
+    m_styleMap[compoundKey].pointShape = shape;
+    updateScatterSeries(compoundKey);
 }
 
-void ChartWidget::setSeriesPointSize(const QString& name, int size) {
-    if (!m_styleMap.contains(name)) return;
-    m_styleMap[name].pointSize = size;
-    updateScatterSeries(name);
+void ChartWidget::setSeriesPointSize(const QString& displayName, int size) {
+    QString compoundKey = m_compoundKeyByDisplayName.value(displayName);
+    if (!m_styleMap.contains(compoundKey)) return;
+    m_styleMap[compoundKey].pointSize = size;
+    updateScatterSeries(compoundKey);
 }
 
-void ChartWidget::setSeriesLineStyle(const QString& name, LineStyle style) {
-    if (!m_styleMap.contains(name)) return;
-    m_styleMap[name].lineStyle = style;
-    updateLineStyle(name);
+void ChartWidget::setSeriesLineStyle(const QString& displayName, LineStyle style) {
+    QString compoundKey = m_compoundKeyByDisplayName.value(displayName);
+    if (!m_styleMap.contains(compoundKey)) return;
+    m_styleMap[compoundKey].lineStyle = style;
+    updateLineStyle(compoundKey);
 }
 
-void ChartWidget::setSeriesLineWidth(const QString& name, int width) {
-    if (!m_styleMap.contains(name)) return;
-    m_styleMap[name].lineWidth = width;
-    updateLineStyle(name);
+void ChartWidget::setSeriesLineWidth(const QString& displayName, int width) {
+    QString compoundKey = m_compoundKeyByDisplayName.value(displayName);
+    if (!m_styleMap.contains(compoundKey)) return;
+    m_styleMap[compoundKey].lineWidth = width;
+    updateLineStyle(compoundKey);
 }
 
-SeriesStyle ChartWidget::getSeriesStyle(const QString& name) const {
-    return m_styleMap.value(name, SeriesStyle());
+SeriesStyle ChartWidget::getSeriesStyle(const QString& displayName) const {
+    QString compoundKey = m_compoundKeyByDisplayName.value(displayName);
+    return m_styleMap.value(compoundKey, SeriesStyle());
 }
 
 void ChartWidget::onChartClicked(const QPointF& point) {
-    if (m_seriesMap.isEmpty()) {
-        return;
-    }
+    if (m_seriesMap.isEmpty()) return;
 
-    QString nearestSeries;
+    QString nearestCompoundKey;
     QPointF nearestPoint;
     double minDistance = std::numeric_limits<double>::max();
 
     for (auto it = m_seriesMap.begin(); it != m_seriesMap.end(); ++it) {
-        const QString& name = it.key();
+        const QString& compoundKey = it.key();
         QLineSeries* series = it.value();
-
         for (const QPointF& p : series->points()) {
             double distance = qSqrt(qPow(p.x() - point.x(), 2) + qPow(p.y() - point.y(), 2));
             if (distance < minDistance) {
                 minDistance = distance;
-                nearestSeries = name;
+                nearestCompoundKey = compoundKey;
                 nearestPoint = p;
             }
         }
     }
 
-    if (!nearestSeries.isEmpty()) {
+    if (!nearestCompoundKey.isEmpty()) {
+        QString displayName = m_displayNameMap.value(nearestCompoundKey);
         m_coordinateOverlay->setText(QString("X: %1, Y: %2").arg(nearestPoint.x(), 0, 'f', 4).arg(nearestPoint.y(), 0, 'f', 4));
         m_coordinateOverlay->setVisible(true);
-        emit coordinateSelected(nearestSeries, nearestPoint.x(), nearestPoint.y());
+        emit coordinateSelected(displayName, nearestPoint.x(), nearestPoint.y());
 
-        setSelectedSeries(nearestSeries);
+        setSelectedSeries(displayName);
         QList<QLegendMarker*> markers = m_chart->legend()->markers();
         for (QLegendMarker* marker : markers) {
             QString markerName = marker->series()->name();
-            if (markerName == nearestSeries || markerName == nearestSeries + "_points") {
+            if (markerName == displayName || markerName == displayName + "_points") {
                 m_selectedMarker = marker;
                 break;
             }
         }
         updateLegendMarkerHighlight();
-
-        updateHighlightPoint(nearestPoint, m_colorMap.value(nearestSeries, QColor(255, 140, 0)));
+        updateHighlightPoint(nearestPoint, m_colorMap.value(nearestCompoundKey));
     }
 }
 
@@ -700,27 +729,28 @@ void ChartWidget::updateAxesRange() {
     m_axisY->setLabelFormat("%.3g");
 }
 
-void ChartWidget::updateScatterSeries(const QString& name) {
-    if (!m_seriesMap.contains(name)) return;
+void ChartWidget::updateScatterSeries(const QString& compoundKey) {
+    if (!m_seriesMap.contains(compoundKey)) return;
 
-    if (m_scatterMap.contains(name)) {
-        QScatterSeries* oldScatter = m_scatterMap[name];
+    if (m_scatterMap.contains(compoundKey)) {
+        QScatterSeries* oldScatter = m_scatterMap[compoundKey];
         m_chart->removeSeries(oldScatter);
         delete oldScatter;
-        m_scatterMap.remove(name);
+        m_scatterMap.remove(compoundKey);
     }
 
-    SeriesStyle style = m_styleMap[name];
-    
+    SeriesStyle style = m_styleMap[compoundKey];
+
     if (style.pointShape == PointShape::None) {
         return;
     }
 
-    const SeriesData& data = m_seriesDataMap[name];
-    QColor color = m_colorMap[name];
+    QString displayName = m_displayNameMap[compoundKey];
+    const SeriesData& data = m_seriesDataMap[compoundKey];
+    QColor color = m_colorMap[compoundKey];
 
     QScatterSeries* scatter = new QScatterSeries();
-    scatter->setName(name + "_points");
+    scatter->setName(displayName + "_points");
     scatter->setMarkerSize(style.pointSize);
 
     qreal size = style.pointSize;
@@ -777,7 +807,7 @@ void ChartWidget::updateScatterSeries(const QString& name) {
     m_chart->addSeries(scatter);
     scatter->attachAxis(m_axisX);
     scatter->attachAxis(m_axisY);
-    m_scatterMap[name] = scatter;
+    m_scatterMap[compoundKey] = scatter;
 
     QList<QLegendMarker*> markers = m_chart->legend()->markers(scatter);
     for (QLegendMarker* marker : markers) {
@@ -788,12 +818,12 @@ void ChartWidget::updateScatterSeries(const QString& name) {
     connect(scatter, &QScatterSeries::hovered, this, &ChartWidget::onHovered);
 }
 
-void ChartWidget::updateLineStyle(const QString& name) {
-    if (!m_seriesMap.contains(name)) return;
+void ChartWidget::updateLineStyle(const QString& compoundKey) {
+    if (!m_seriesMap.contains(compoundKey)) return;
 
-    QLineSeries* series = m_seriesMap[name];
-    SeriesStyle style = m_styleMap[name];
-    QColor color = m_colorMap[name];
+    QLineSeries* series = m_seriesMap[compoundKey];
+    SeriesStyle style = m_styleMap[compoundKey];
+    QColor color = m_colorMap[compoundKey];
 
     QPen pen(color);
     pen.setWidth(style.lineWidth);
