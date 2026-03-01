@@ -9,6 +9,7 @@
 #include <QHBoxLayout>
 #include <QSize>
 #include <QStyle>
+#include <QTimer>
 #include <QDebug>
 
 namespace Viewer {
@@ -444,7 +445,7 @@ void MainWindow::onCurrentCanvasChanged(int index) {
 
 void MainWindow::onCanvasCreated(const QString& name) {
     Q_UNUSED(name);
-    m_leftPane->syncSelectionWithSeries(QStringList());
+    // onCurrentCanvasChanged already syncs the checkboxes for the new empty canvas.
 }
 
 void MainWindow::onCanvasDestroyed(int index) {
@@ -542,12 +543,17 @@ void MainWindow::onApplyConfig(const QString& configName) {
     // Build set of target display names for fast lookup
     QSet<QString> targets = QSet<QString>::fromList(cfg.seriesNames);
 
-    // Collect matching compound keys across all loaded files
+    // Collect matching compound keys — take only the FIRST match per display name.
+    // Taking all matches across all files causes addSeries() to deduplicate by
+    // display name and end up with whichever file was listed last, which makes
+    // the checkbox sync reflect the wrong file.
     QStringList toAdd;
+    QSet<QString> matched;
     for (const QString& filePath : m_dataModel->getFileNames()) {
         for (const SeriesData& series : m_dataModel->getSeriesForFile(filePath)) {
-            if (targets.contains(series.name)) {
+            if (targets.contains(series.name) && !matched.contains(series.name)) {
                 toAdd.append(filePath + QChar('\x1E') + series.name);
+                matched.insert(series.name);
             }
         }
     }
@@ -565,11 +571,16 @@ void MainWindow::onApplyConfig(const QString& configName) {
         m_canvasArea->addSeriesToCurrentCanvas(key);
     }
 
-    // Sync left-pane checkboxes with the new canvas
-    ChartWidget* newCanvas = m_canvasArea->currentCanvas();
-    if (newCanvas) {
-        m_leftPane->syncSelectionWithSeries(newCanvas->getSeriesNames());
-    }
+    // Sync left-pane checkboxes with the new canvas.
+    // Use singleShot(0) to defer until after all pending Qt internal events
+    // (e.g. any deferred currentChanged) have been processed, so this sync
+    // is guaranteed to be the last thing applied to the checkbox state.
+    QTimer::singleShot(0, this, [this]() {
+        ChartWidget* canvas = m_canvasArea->currentCanvas();
+        if (canvas) {
+            m_leftPane->syncSelectionWithSeries(canvas->getSeriesNames());
+        }
+    });
 }
 
 } // namespace Viewer
